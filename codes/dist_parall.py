@@ -12,7 +12,7 @@ from qiskit_nature.second_q.circuit.library.ansatzes import UCCSD
 from qiskit_nature.second_q.circuit.library.initial_states import HartreeFock
 
 from qiskit_algorithms.optimizers import SLSQP, ADAM, CG
-from qiskit.primitives import Estimator
+from qiskit.primitives import Estimator, BackendEstimator
 from qiskit_algorithms import VQE
 from qiskit_nature.second_q.algorithms import GroundStateEigensolver
 
@@ -21,12 +21,36 @@ import datetime
 import time
 import os
 
+from qiskit_aer import AerSimulator
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+
 MAPPER_CLASSES = {
     'parity': ParityMapper,
     'jordan_wigner': JordanWignerMapper,
     'bravyi_kitaev': BravyiKitaevMapper,
     'logarithmic': LogarithmicMapper
 }
+
+def noise_model():
+    # Define a basic depolarizing noise model
+    noise_model = NoiseModel()
+    error_1q = depolarizing_error(0.0001, 1)  # 0.01% error for 1-qubit gates
+    error_2q = depolarizing_error(0.001, 2)   # 0.1% error for 2-qubit gates
+
+    # Add to typical gates used in UCCSD
+    noise_model.add_all_qubit_quantum_error(error_1q, ['rx', 'ry', 'rz', 'u3'])
+    noise_model.add_all_qubit_quantum_error(error_2q, ['cx'])
+
+    # Create AerSimulator with noise model
+    noisy_backend = AerSimulator(
+        noise_model          = noise_model,
+        shots                = 1024, # Number of shots
+        seed_simulator       = 42, # For reproducible results
+        method               = 'density_matrix', # Good for small noisy systems
+        max_parallel_threads = 1, # Avoid conflicts with multiprocessing
+    )
+
+    return noisy_backend
 
 def physical_problem(atom1: str, atom2: str, distance: float, basis: str, num_el: int, num_spat_orb: int):
     """
@@ -90,7 +114,7 @@ def classical_sol(qubit_op):
 
     return result
 
-def quantum_sol(molecule_reduced, mapper, optimizer):
+def quantum_sol(molecule_reduced, mapper, optimizer, estimator: str):
     """
     Solves the problem using VQE algorithm. The initial state is defined by HartreeFock, the initial ansatz is defined using the UCSSD.
 
@@ -116,8 +140,6 @@ def quantum_sol(molecule_reduced, mapper, optimizer):
         reps                 = 2
     )
 
-    estimator = Estimator()
-
     vqe_solver = VQE(
         estimator = estimator,
         optimizer = optimizer,
@@ -133,7 +155,7 @@ def quantum_sol(molecule_reduced, mapper, optimizer):
 
     return vqe_result
 
-def run_for(atom1: str, atom2: str, basis: str, mapper_str: str, distance: float, optimizer):
+def run_for(atom1: str, atom2: str, basis: str, mapper_str: str, distance: float, optimizer, estimator):
     """
     Runs the simulation for every distance within the for cycle.
 
@@ -146,7 +168,7 @@ def run_for(atom1: str, atom2: str, basis: str, mapper_str: str, distance: float
     molecule = physical_problem(atom1, atom2, distance, basis, 2, 2)
     qubit_operator, mapper = get_qubit_op(molecule, mapper_str)
     exact_energy = classical_sol(qubit_operator)
-    vqe_result = quantum_sol(molecule, mapper, optimizer)
+    vqe_result = quantum_sol(molecule, mapper, optimizer, estimator)
 
     return (distance, vqe_result, exact_energy)
 
@@ -155,17 +177,17 @@ f_time = datetime.datetime.now()
 # Define the bases, mapper, optimizer, and output file
 bases = [
     'sto3g',
-    '321g',
-    '631g',
-    'ccpvtz'
+    # '321g',
+    # '631g',
+    # 'ccpvtz'
 ]
 
-optimizer = SLSQP()
-opt_str = 'SLSQP'
+# optimizer = SLSQP()
+# opt_str = 'SLSQP'
 # optimizer = CG()
 # opt_str = 'CG'
-# optimizer = ADAM()
-# opt_str = 'ADAM'
+optimizer = ADAM()
+opt_str = 'ADAM'
 mapper = 'parity'
 
 atom1 = 'Li'
@@ -175,6 +197,12 @@ dist_init = 0.01
 dist_fin  = 3
 steps     = 100
 dist_array = np.linspace(dist_init, dist_fin, steps)
+
+noise = True
+if noise:
+    noisy_backend = noise_model()
+    estimator = BackendEstimator(backend = noisy_backend)
+else: estimator = Estimator()
 
 path = "/home/tommi/venvs/output"
 
@@ -190,7 +218,7 @@ for b in bases:
         start = datetime.datetime.now()
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = [
-                executor.submit(run_for, atom1, atom2, b, mapper, d, optimizer) for d in dist_array
+                executor.submit(run_for, atom1, atom2, b, mapper, d, optimizer, estimator) for d in dist_array
             ]
 
             for future in concurrent.futures.as_completed(futures):
