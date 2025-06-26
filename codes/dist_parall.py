@@ -62,11 +62,19 @@ def physical_problem(atoms: list[str, str], distance: float, basis: str, num_el:
         reduced molecule structure
     """
     # Define the molecule
-    driver = PySCFDriver(
-        atom    = f'{atoms[0]} .0 .0 .0; {atoms[1]} .0 .0 {distance}',
-        basis   = basis,
-        unit    = DistanceUnit.ANGSTROM
-    )
+    if atoms[0] == 'none' or atoms[1] == 'none':
+        atom = atoms[0] if atoms[1] == 'none' else atoms[1]
+        driver = PySCFDriver(
+            atom    = f'{atom} 0.0 0.0 0.0',
+            basis   = basis,
+            unit    = DistanceUnit.ANGSTROM
+        )
+    else:
+        driver = PySCFDriver(
+            atom    = f'{atoms[0]} .0 .0 .0; {atoms[1]} .0 .0 {distance}',
+            basis   = basis,
+            unit    = DistanceUnit.ANGSTROM
+        )
     qmolecule = driver.run()
 
     # Get the electronic Hamiltonian considering only 4 spin orbitals
@@ -177,13 +185,11 @@ def inizialization(f_time, atoms: list[str, str], mapper: str, opt_str: str):
     """
     date = f'{f_time.day}-{f_time.month}-{f_time.year}_{f_time.hour}_{f_time.minute}_{f_time.second}'
 
-    if atoms[0] == 'none' or atoms[1] == 'none':
-        atom = atoms[0] if atoms[1] == 'none' else atoms[1]
-
-        path = "/home/tommi/venvs/output_single_atom"
-        filename = f"results{atom}_{b}_{mapper}_{opt_str}_{date}.txt"
+    if atoms[0] == atoms[1]:
+        path = "/home/tommi/venvs/outputLi2H2"
+        filename = f"results{atoms[0]}2_{b}_{mapper}_{opt_str}_{date}.txt"
     else:
-        path = "/home/tommi/venvs/output"
+        path = "/home/tommi/venvs/outputLiH"
         filename = f"results{atoms[0]}_{atoms[1]}_{b}_{mapper}_{opt_str}_{date}.txt"
 
     full_path = os.path.join(path, filename)
@@ -191,9 +197,6 @@ def inizialization(f_time, atoms: list[str, str], mapper: str, opt_str: str):
     return full_path
 
 def run_single_atom(atoms: list[str, str], basis: str, mapper_str: str, distance: float, optimizer, estimator, num_el: int | tuple[int, int], num_spat_orb: int):
-    if atoms[0] == 'none':
-        atoms = ['H', atoms[1]]
-    else: atoms = [atoms[0], 'H']
     
     dist, quantum_res, class_res = run_for(atoms, basis, mapper_str, distance, optimizer, estimator, num_el, num_spat_orb)
 
@@ -217,7 +220,6 @@ opt_str = 'SLSQP'
 # opt_str = 'ADAM'
 mapper = 'parity'
 
-atoms = ['Li', 'H']
 num_electrons = 2
 num_spatial_orbitals = 2
 
@@ -226,13 +228,14 @@ dist_fin  = 3
 steps     = 100
 dist_array = np.linspace(dist_init, dist_fin, steps)
 
-noise = True
+noise = False
 if noise:
     noisy_backend = noise_model()
     estimator = BackendEstimator(backend = noisy_backend)
 else: estimator = Estimator()
 
 for b in bases:
+    atoms = ['Li', 'H']
     tot = 0
     energy_dict = {}
 
@@ -240,14 +243,33 @@ for b in bases:
     with open(full_path, 'w') as file:
         start = datetime.datetime.now()
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = [
-                executor.submit(run_for, atoms, b, mapper, d, optimizer, estimator) for d in dist_array
-            ]
+        if atoms[0] == atoms[1]:
+            dist = 1e4
 
-            for future in concurrent.futures.as_completed(futures):
-                d, quantum_res, class_res = future.result()
-                file.write(f"{d:.3f} Å - VQE = {quantum_res.total_energies[0]} (eigenvalue {quantum_res.eigenvalues[0]}) Ha, Classic = {class_res.eigenvalues[0]} Ha\n")
+            dist, quantum_res, class_res = run_single_atom(
+                atoms        = atoms,
+                basis        = b,
+                mapper_str   = mapper,
+                distance     = dist,
+                optimizer    = optimizer,
+                estimator    = estimator,
+                num_el       = num_electrons,
+                num_spat_orb = num_spatial_orbitals
+            )
+            file.write(f"VQE = {quantum_res.total_energies[0]} (eigenvalue {quantum_res.eigenvalues[0]}) Ha, Classic = {class_res.eigenvalues[0]} Ha\n")
 
-        end = datetime.datetime.now()
-        file.write(f"Total time: {(end - start).total_seconds():.2f} seconds")
+            end = datetime.datetime.now()
+            file.write(f"Total time: {(end - start).total_seconds():.2f} seconds")
+        else:
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = [
+                    executor.submit(run_for, atoms, b, mapper, d, optimizer, estimator, num_electrons, num_spatial_orbitals)
+                    for d in dist_array
+                ]
+
+                for future in concurrent.futures.as_completed(futures):
+                    d, quantum_res, class_res = future.result()
+                    file.write(f"{d:.3f} Å - VQE = {quantum_res.total_energies[0]} (eigenvalue {quantum_res.eigenvalues[0]}) Ha, Classic = {class_res.eigenvalues[0]} Ha\n")
+
+            end = datetime.datetime.now()
+            file.write(f"Total time: {(end - start).total_seconds():.2f} seconds")
