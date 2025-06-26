@@ -6,7 +6,6 @@ from qiskit_nature.second_q.transformers import ActiveSpaceTransformer
 from qiskit_nature.second_q.mappers import ParityMapper, JordanWignerMapper, BravyiKitaevMapper, LogarithmicMapper
 
 from qiskit_algorithms.eigensolvers import NumPyEigensolver
-from qiskit_algorithms.minimum_eigensolvers import numpy_minimum_eigensolver
 from qiskit_nature.second_q.circuit.library.ansatzes import UCCSD
 
 from qiskit_nature.second_q.circuit.library.initial_states import HartreeFock
@@ -52,7 +51,7 @@ def noise_model():
 
     return noisy_backend
 
-def physical_problem(atom1: str, atom2: str, distance: float, basis: str, num_el: int, num_spat_orb: int):
+def physical_problem(atoms: list[str, str], distance: float, basis: str, num_el: int | tuple[int, int], num_spat_orb: int):
     """
     Defines the physical problem, i.e. the reduced molecule structure that will be used to create the qubit operator via the fermionic operator.
 
@@ -64,7 +63,7 @@ def physical_problem(atom1: str, atom2: str, distance: float, basis: str, num_el
     """
     # Define the molecule
     driver = PySCFDriver(
-        atom    = f'{atom1} .0 .0 .0; {atom2} .0 .0 {distance}',
+        atom    = f'{atoms[0]} .0 .0 .0; {atoms[1]} .0 .0 {distance}',
         basis   = basis,
         unit    = DistanceUnit.ANGSTROM
     )
@@ -155,7 +154,7 @@ def quantum_sol(molecule_reduced, mapper, optimizer, estimator: str):
 
     return vqe_result
 
-def run_for(atom1: str, atom2: str, basis: str, mapper_str: str, distance: float, optimizer, estimator):
+def run_for(atoms: list[str, str], basis: str, mapper_str: str, distance: float, optimizer, estimator, num_el: int | tuple[int, int], num_spat_orb: int):
     """
     Runs the simulation for every distance within the for cycle.
 
@@ -165,33 +164,62 @@ def run_for(atom1: str, atom2: str, basis: str, mapper_str: str, distance: float
     **Output**:
         distance, quantum result (total system energy), classical result (numerically obtained eigenvalue).
     """
-    molecule = physical_problem(atom1, atom2, distance, basis, 2, 2)
+    molecule = physical_problem(atoms, distance, basis, num_el, num_spat_orb)
     qubit_operator, mapper = get_qubit_op(molecule, mapper_str)
     exact_energy = classical_sol(qubit_operator)
     vqe_result = quantum_sol(molecule, mapper, optimizer, estimator)
 
     return (distance, vqe_result, exact_energy)
 
+def inizialization(f_time, atoms: list[str, str], mapper: str, opt_str: str):
+    """
+    Defines the file path based on the number of atoms
+    """
+    date = f'{f_time.day}-{f_time.month}-{f_time.year}_{f_time.hour}_{f_time.minute}_{f_time.second}'
+
+    if atoms[0] == 'none' or atoms[1] == 'none':
+        atom = atoms[0] if atoms[1] == 'none' else atoms[1]
+
+        path = "/home/tommi/venvs/output_single_atom"
+        filename = f"results{atom}_{b}_{mapper}_{opt_str}_{date}.txt"
+    else:
+        path = "/home/tommi/venvs/output"
+        filename = f"results{atoms[0]}_{atoms[1]}_{b}_{mapper}_{opt_str}_{date}.txt"
+
+    full_path = os.path.join(path, filename)
+
+    return full_path
+
+def run_single_atom(atoms: list[str, str], basis: str, mapper_str: str, distance: float, optimizer, estimator, num_el: int | tuple[int, int], num_spat_orb: int):
+    if atoms[0] == 'none':
+        atoms = ['H', atoms[1]]
+    else: atoms = [atoms[0], 'H']
+    
+    dist, quantum_res, class_res = run_for(atoms, basis, mapper_str, distance, optimizer, estimator, num_el, num_spat_orb)
+
+    return dist, quantum_res, class_res
+
 f_time = datetime.datetime.now()
 
 # Define the bases, mapper, optimizer, and output file
 bases = [
     'sto3g',
-    # '321g',
-    # '631g',
-    # 'ccpvtz'
+    '321g',
+    '631g',
+    'ccpvtz'
 ]
 
-# optimizer = SLSQP()
-# opt_str = 'SLSQP'
+optimizer = SLSQP()
+opt_str = 'SLSQP'
 # optimizer = CG()
 # opt_str = 'CG'
-optimizer = ADAM()
-opt_str = 'ADAM'
+# optimizer = ADAM()
+# opt_str = 'ADAM'
 mapper = 'parity'
 
-atom1 = 'Li'
-atom2 = 'H'
+atoms = ['Li', 'H']
+num_electrons = 2
+num_spatial_orbitals = 2
 
 dist_init = 0.01
 dist_fin  = 3
@@ -204,21 +232,17 @@ if noise:
     estimator = BackendEstimator(backend = noisy_backend)
 else: estimator = Estimator()
 
-path = "/home/tommi/venvs/output"
-
 for b in bases:
     tot = 0
     energy_dict = {}
 
-    date = f'{f_time.day}-{f_time.month}-{f_time.year}_{f_time.hour}_{f_time.minute}_{f_time.second}'
-    filename = f"results{atom1}{atom2}_{b}_{mapper}_{opt_str}_{date}.txt"
-    full_path = os.path.join(path, filename)
-
+    full_path = inizialization(f_time, atoms, mapper, opt_str)
     with open(full_path, 'w') as file:
         start = datetime.datetime.now()
+
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = [
-                executor.submit(run_for, atom1, atom2, b, mapper, d, optimizer, estimator) for d in dist_array
+                executor.submit(run_for, atoms, b, mapper, d, optimizer, estimator) for d in dist_array
             ]
 
             for future in concurrent.futures.as_completed(futures):
